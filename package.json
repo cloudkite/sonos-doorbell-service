@@ -1,0 +1,19 @@
+{
+  "name": "sonos-doorbell-api",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "rm -rf dist && tsc && node ./dist/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "sonos": "1.14.1"
+  },
+  "devDependencies": {
+    "@types/node": "14.0.5",
+    "typescript": "4.7.3"
+  }
+}
