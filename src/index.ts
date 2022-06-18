@@ -4,7 +4,7 @@ import fs from 'fs'
 import os from 'os';
 import http from 'http'
 
-import type { Group, Track } from './types';
+import type { Group } from './types';
 
 let port = process.env.PORT || 5050;
 
@@ -15,7 +15,7 @@ function stat(path: string): Promise<fs.Stats> {
 }
 
 function getDevices(): Promise<Group[]> {
-  return new Promise<Group[]>(resolve => {
+  return new Promise(resolve => {
     DeviceDiscovery().once('DeviceAvailable', async (device) => {
       let sonos = new Sonos(device.host, device.port, null);
       let groups = await sonos.getAllGroups();
@@ -26,41 +26,55 @@ function getDevices(): Promise<Group[]> {
 
 function getLocalAddress() {
   let interfaces = os.networkInterfaces();
-  let endpoints: string[] = [];
-  
-  for (var name in interfaces) {
-    interfaces[name]
-      .filter((ipInfo) => ipInfo.internal == false && ipInfo.family == 'IPv4')
-      .forEach((ipInfo) => endpoints.push(ipInfo.address));
+  for (let inter of Object.values(interfaces)) {
+    for (let info of inter) {
+      if (info.internal == false && info.family == 'IPv4') {
+        return info.address
+      }
+    }
   }
+}
 
-  return endpoints;
+function error(msg: string) {
+  return () => console.error(msg)
 }
 
 async function ring(ip: string, port: string | number, device: Group) {
   let sonos = new Sonos(device.host, device.port, null);
-  let track: Track = await sonos.currentTrack();
-  let state: string = await sonos.getCurrentState();
-  let volume: string = await sonos.getVolume();
-  let uri = track?.uri;
-
-  console.log(device.Name, track, state, volume);
+  let state = await sonos.getCurrentState();
+  let volume = await sonos.getVolume();
+  let wasPlaying = (state === 'playing' || state === 'transitioning')
+  let mediaInfo = await sonos.avTransportService().GetMediaInfo()
+  let positionInfo = await sonos.avTransportService().GetPositionInfo()
+  console.log(device.Name, mediaInfo.CurrentURI, state, volume);
 
   // skip devices playing doorbell or TV stream
-  if (uri?.startsWith(`http://${ip}`)) return;
-  if (uri?.startsWith(`x-sonos-htastream`)) return;
-  
+  if (wasPlaying && mediaInfo.CurrentURI?.startsWith(`http://${ip}`)) return;
+  if (wasPlaying && mediaInfo.CurrentURI?.startsWith(`x-sonos-htastream`)) return;
+
   await sonos.setVolume(60);
-  await sonos.play(`http://${ip}:${port}/clips/doorbell.mp3`);
+  await sonos.setAVTransportURI({ uri: `http://${ip}:${port}/clips/doorbell.mp3` })
   console.log(`${device.Name}: Rang doorbell`);
 
   // Wait for the doorbell sound to finish
   await new Promise(resolve => setTimeout(resolve, 7000));
   await sonos.setVolume(volume);
 
-  if (state === "playing" && uri) {
-    await sonos.play(uri);
-    console.log(`${device.Name}: Resume playback`);
+  // following doesnt work with spotify :(
+  await sonos.setAVTransportURI({ uri: mediaInfo.CurrentURI, metadata: mediaInfo.CurrentURIMetaData, onlySetUri: true })
+    .catch(error('Reverting media failed.'))
+
+  if (positionInfo.Track && positionInfo.Track > 1 && mediaInfo.NrTracks > 1) {
+    await sonos.selectTrack(positionInfo.Track).catch(error('Reverting back track failed.'))
+  }
+
+  if (positionInfo.RelTime && positionInfo.TrackDuration !== '0:00:00') {
+    await sonos.avTransportService().Seek({ InstanceID: 0, Unit: 'REL_TIME', Target: positionInfo.RelTime })
+      .catch(error('Reverting back track time failed.'))
+  }
+
+  if (wasPlaying) {
+    await sonos.play().catch(error('Resuming playback failed.'))
   }
 }
 
@@ -72,7 +86,7 @@ async function run() {
 
     if (req.url.endsWith('/ring')) {
       res.statusCode = 200;
-      await Promise.all(devices.map(device => ring(localAddress[0], port, device)))
+      await Promise.all(devices.map(device => ring(localAddress, port, device))).catch(error('ring failed'))
       res.end();
       return;
     }
@@ -92,11 +106,10 @@ async function run() {
 
     res.statusCode = 404;
     res.end();
-    return;
   });
 
   server.listen(port);
-  console.log(`Sonos Doorbell API available on: http://${localAddress[0]}:${port}`);
+  console.log(`Sonos Doorbell API available on: http://${localAddress}:${port}`);
 }
 
 run();
