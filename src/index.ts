@@ -1,8 +1,8 @@
 import { Sonos, DeviceDiscovery } from 'sonos';
 import { resolve } from 'path';
 import fs from 'fs'
-import os from 'os';
 import http from 'http'
+import ip from 'ip'
 
 import type { Group } from './types';
 
@@ -16,27 +16,13 @@ function stat(path: string): Promise<fs.Stats> {
 
 function getDevices(): Promise<Group[]> {
   return new Promise(resolve => {
+    // @ts-expect-error
     DeviceDiscovery().once('DeviceAvailable', async (device) => {
       let sonos = new Sonos(device.host, device.port, null);
       let groups = await sonos.getAllGroups();
       resolve(groups);
     });
   })
-}
-
-function getLocalAddress() {
-  let interfaces = os.networkInterfaces();
-  for (let inter of Object.values(interfaces)) {
-    for (let info of inter) {
-      if (info.internal == false && info.family == 'IPv4') {
-        return info.address
-      }
-    }
-  }
-}
-
-function error(msg: string) {
-  return () => console.error(msg)
 }
 
 async function ring(ip: string, port: string | number, device: Group) {
@@ -46,15 +32,17 @@ async function ring(ip: string, port: string | number, device: Group) {
   let wasPlaying = (state === 'playing' || state === 'transitioning')
   let mediaInfo = await sonos.avTransportService().GetMediaInfo()
   let positionInfo = await sonos.avTransportService().GetPositionInfo()
-  console.log(device.Name, mediaInfo.CurrentURI, state, volume);
 
+  let info = { name: device.Name, rang: false, uri: mediaInfo.CurrentURI, state, volume, errors: [] }
+  let error = (msg: string) => () => info.errors.push(msg)
+  
   // skip devices playing doorbell or TV stream
-  if (wasPlaying && mediaInfo.CurrentURI?.startsWith(`http://${ip}`)) return;
-  if (wasPlaying && mediaInfo.CurrentURI?.startsWith(`x-sonos-htastream`)) return;
+  if (wasPlaying && mediaInfo.CurrentURI?.startsWith(`http://${ip}`)) return info;
+  if (wasPlaying && mediaInfo.CurrentURI?.startsWith(`x-sonos-htastream`)) return info;
 
   await sonos.setVolume(60);
   await sonos.setAVTransportURI({ uri: `http://${ip}:${port}/clips/doorbell.mp3` })
-  console.log(`${device.Name}: Rang doorbell`);
+  info.rang = true;
 
   // Wait for the doorbell sound to finish
   await new Promise(resolve => setTimeout(resolve, 7000));
@@ -74,20 +62,26 @@ async function ring(ip: string, port: string | number, device: Group) {
   }
 
   if (wasPlaying) {
+    // @ts-expect-error
     await sonos.play().catch(error('Resuming playback failed.'))
   }
+
+  return info
 }
 
 async function run() {
-  let localAddress = getLocalAddress();
+  let localAddress = ip.address();
   let devices = await getDevices();
 
   let server = http.createServer(async function serve(req, res) {
 
     if (req.url.endsWith('/ring')) {
       res.statusCode = 200;
-      await Promise.all(devices.map(device => ring(localAddress, port, device))).catch(error('ring failed'))
-      res.end();
+      let results = await Promise.all(devices.map(device => ring(localAddress, port, device)));
+      let str = JSON.stringify(results, null, 2);
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+	    res.setHeader('Content-Length', Buffer.byteLength(str));
+	    res.end(str);
       return;
     }
   
