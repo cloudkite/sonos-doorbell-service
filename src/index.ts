@@ -2,7 +2,7 @@ import { Sonos, DeviceDiscovery } from 'sonos';
 import { resolve } from 'path';
 import fs from 'fs'
 import http from 'http'
-import ip from 'ip'
+import os from 'os'
 
 import type { Group } from './types';
 
@@ -23,6 +23,16 @@ function getDevices(): Promise<Group[]> {
       resolve(groups);
     });
   })
+}
+
+function getNetworkAddress() {
+  let nets = os.networkInterfaces()
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      const family = typeof net.family === 'string' ? 'IPv4' : 4
+      if (net.family === family && !net.internal) return net.address
+    }
+  }
 }
 
 async function ring(ip: string, port: string | number, device: Group) {
@@ -70,7 +80,7 @@ async function ring(ip: string, port: string | number, device: Group) {
 }
 
 async function run() {
-  let localAddress = ip.address();
+  let localAddress = getNetworkAddress();
   let devices = await getDevices();
 
   let server = http.createServer(async function serve(req, res) {
